@@ -1,5 +1,0 @@
-# Ignore Elm build artifacts
-elm-stuff/
-
-# Ignore any index.html files
-index.html
