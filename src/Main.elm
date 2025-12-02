@@ -1,5 +1,6 @@
-module Main exposing (main)
+module Main exposing (main, randomBlock)
 
+import Grid exposing (Grid)
 import Browser
 import Browser.Events as E
 import Html exposing (Html)
@@ -7,6 +8,10 @@ import Html.Attributes exposing (width, height, style)
 import Math.Matrix4 as Mat4 exposing (Mat4)
 import Math.Vector3 as Vec3 exposing (Vec3, vec3)
 import WebGL
+import Random exposing (Generator, list, map)
+import Array
+import Grid exposing (foldGrid)
+import World exposing (Block)
 
 main =
   Browser.element
@@ -17,37 +22,49 @@ main =
     }
 
 type alias Model =
-  Float
+  Grid Block
 
 init : () -> (Model, Cmd Msg)
 init () =
-  ( 0, Cmd.none )
+  (fullChunk, Random.generate GotChunk randomChunkGenerator)
 
 type Msg
-  = TimeDelta Float
+  = TimeDelta Float | GotChunk (Grid Block)
 
-update : Msg -> Model -> (Model, Cmd Msg)
-update msg angle =
-  case msg of
-    TimeDelta dt ->
-      ( angle + dt / 1000, Cmd.none )
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg model =
+    case msg of
+        TimeDelta dt ->
+            let
+                tris = listFromChunk model
+            in
+            (model, Cmd.none)
+        GotChunk chunk ->
+            (chunk, Cmd.none)
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
   E.onAnimationFrameDelta TimeDelta
 
+fullBlock : Block
+fullBlock = { id = 1 }
+
+emptyBlock : Block
+emptyBlock = { id = 0 }
+    
+fullChunk : Grid Block
+fullChunk = { elements = Array.repeat 1 fullBlock, shape = [16, 16, 16] }
 view : Model -> Html Msg
-view angle =
+view chunk =
   let
-    uniforms_ = uniforms angle
+    uniforms_ = uniforms 0
   in
   WebGL.toHtml
     [ width 700, height 700, style "display" "block" ]
-    [ WebGL.entity vertexShader fragmentShader cubeMesh uniforms_
-    , WebGL.entity lightVertexShader lightFragmentShader lightCubeMesh uniforms_
-    ]
+    [ WebGL.entity vertexShader fragmentShader (meshFromChunk fullChunk) uniforms_ ]
 
 -- UNIFORMS
+
 
 type alias Uniforms =
   { rotation : Mat4
@@ -62,8 +79,8 @@ uniforms angle =
       Mat4.mul
         (Mat4.makeRotate (3 * angle) (vec3 0 1 0))
         (Mat4.makeRotate (2 * angle) (vec3 1 0 0))
-  , perspective = Mat4.makePerspective 45 1 0.01 100
-  , camera = Mat4.makeLookAt (vec3 0 0 5) (vec3 0 0 0) (vec3 0 1 0)
+  , perspective = Mat4.makePerspective 50 1 0.01 100
+  , camera = Mat4.makeLookAt (vec3 7 7 20) (vec3 0 0 0) (vec3 0 1 0)
   , light = vec3 0 2 2
   }
 
@@ -75,30 +92,109 @@ type alias Vertex =
   , normal : Vec3
   }
 
+-- FACE BUFFER
+
+-- flat array: 16*16*17 per channel, 3 channels for X/Y/Z
+emptyFaceBuffer : Grid Int
+emptyFaceBuffer =
+    { elements = Array.repeat (17 * 17 * 17 * 3) 0
+    , shape = [17, 17, 17, 3]
+    }
+
+
+setFacesFromCube : (Int, Int, Int) -> Maybe (Grid Int) -> Maybe (Grid Int)
+setFacesFromCube (x, y, z) buffer =
+           Grid.setElement [x    , y, z, 0] 1
+        <| Grid.setElement [x + 1, y, z, 0] 1
+        <| Grid.setElement [x, y    , z, 1] 1
+        <| Grid.setElement [x, y + 1, z, 1] 1
+        <| Grid.setElement [x, y, z    , 2] 1
+        <| Grid.setElement [x, y, z + 1, 2] 1
+        <| buffer
+
+setFacesFromChunk : (Grid Block) -> Maybe (Grid Int)
+setFacesFromChunk chunk =
+    let
+        coordsFromIndex i =
+            let
+                x = modBy 16 i
+                y = modBy 16 (i // 16)
+                z = i // (16 * 16)
+            in
+            (x, y, z)
+
+        allIndexedBlocks = Array.indexedMap Tuple.pair chunk.elements
+
+        folder (i, block) buffer =
+            if block.id /= 0 then
+                let pos = coordsFromIndex i in
+                setFacesFromCube pos buffer
+            else
+                buffer
+    in -- Direction 0 = -X
+    Array.foldl folder (Just emptyFaceBuffer) allIndexedBlocks -- Return faces buffer
+
+-- MESH FROM FACES
+trianglesFromFace : (Int, Int, Int) -> Int -> List (Vertex, Vertex, Vertex)
+trianglesFromFace (x, y, z) dir =
+    let
+      p000 = vec3 (toFloat x)     (toFloat y)     (toFloat z)
+      p100 = vec3 (toFloat (x+1)) (toFloat y)     (toFloat z)
+      p010 = vec3 (toFloat x)     (toFloat (y+1)) (toFloat z)
+      p110 = vec3 (toFloat (x+1)) (toFloat (y+1)) (toFloat z)
+      p001 = vec3 (toFloat x)     (toFloat y)     (toFloat (z+1))
+      p101 = vec3 (toFloat (x+1)) (toFloat y)     (toFloat (z+1))
+      p011 = vec3 (toFloat x)     (toFloat (y+1)) (toFloat (z+1))
+      normal =
+        case dir of
+            0 -> vec3 1 0 0
+            1 -> vec3 0 1 0
+            2 -> vec3 0 0 1
+            _ -> vec3 0 0 0
+      vertex pos =
+        Vertex (vec3 0.5 0.5 0.5) pos normal
+   in
+    case dir of
+        0 -> [ ( vertex p000, vertex p001, vertex p010 ), ( vertex p001, vertex p010, vertex p011 ) ] -- X normal
+        1 -> [ ( vertex p000, vertex p001, vertex p100 ), ( vertex p001, vertex p100, vertex p101 ) ] -- Y normal
+        2 -> [ ( vertex p000, vertex p010, vertex p100 ), ( vertex p010, vertex p100, vertex p110 ) ] -- Z normal
+        _ -> []
+-- mesh generator
+listFromChunk : Grid Block -> List (Vertex, Vertex, Vertex)
+listFromChunk chunk =
+    let
+        buffer = Maybe.withDefault emptyFaceBuffer (setFacesFromChunk chunk)
+
+        folder : List Int -> Int -> List (Vertex, Vertex, Vertex) -> List (Vertex, Vertex, Vertex)
+        folder coords value acc =
+            if value /= 0 then
+                let
+                    tris =
+                      case coords of
+                        [ x, y, z, dir ] ->
+                          trianglesFromFace (x, y, z) dir
+                        _ ->
+                          []
+                in
+                List.append tris acc
+            else
+                acc
+    in
+    foldGrid folder [] buffer
+meshFromChunk : Grid Block -> WebGL.Mesh Vertex
+meshFromChunk chunk =
+    WebGL.triangles (listFromChunk chunk)
+
+randomBlock : Generator Block
+randomBlock =
+    Random.int 0 1
+        |> map (\v -> { id = v })
 -- CUBE MESH (RED CUBE)
+randomChunkGenerator : Generator (Grid Block)
+randomChunkGenerator =
+    list (16*16*16) randomBlock
+        |> map (\lst -> { elements = Array.fromList lst, shape = [16,16,16] })
 
-cubeMesh : WebGL.Mesh Vertex
-cubeMesh =
-  let
-    rft = vec3 1 1 1
-    lft = vec3 -1 1 1
-    lbt = vec3 -1 -1 1
-    rbt = vec3 1 -1 1
-    rbb = vec3 1 -1 -1
-    rfb = vec3 1 1 -1
-    lfb = vec3 -1 1 -1
-    lbb = vec3 -1 -1 -1
-
-    red = vec3 255 255 255
-  in
-  WebGL.triangles <| List.concat <|
-    [ face red rft rfb rbb rbt
-    , face red rft rfb lfb lft
-    , face red rft lft lbt rbt
-    , face red rfb lfb lbb rbb
-    , face red lft lfb lbb lbt
-    , face red rbt rbb lbb lbt
-    ]
 
 -- FACE: compute normal, force outward relative to cube center
 face : Vec3 -> Vec3 -> Vec3 -> Vec3 -> Vec3 -> List ( Vertex, Vertex, Vertex )
@@ -129,28 +225,7 @@ face color a b c d =
 -- LIGHT CUBE (SMALL MARKER)
 
 lightCubeMesh : WebGL.Mesh Vertex
-lightCubeMesh =
-  let
-    s = 0.35
-    rft = vec3 s s s
-    lft = vec3 -s s s
-    lbt = vec3 -s -s s
-    rbt = vec3 s -s s
-    rbb = vec3 s -s -s
-    rfb = vec3 s s -s
-    lfb = vec3 -s s -s
-    lbb = vec3 -s -s -s
-
-    yellow = vec3 255 255 0
-  in
-  WebGL.triangles <| List.concat <|
-    [ face yellow rft rfb rbb rbt
-    , face yellow rft rfb lfb lft
-    , face yellow rft lft lbt rbt
-    , face yellow rfb lfb lbb rbb
-    , face yellow lft lfb lbb lbt
-    , face yellow rbt rbb lbb lbt
-    ]
+lightCubeMesh = WebGL.triangles <| []
 
 -- SHADERS
 
@@ -206,35 +281,5 @@ fragmentShader =
 
         vec3 color = ambient + diffuse + specular;
         gl_FragColor = vec4(color, 1.0);
-    }
-  |]
-
--- Light cube shaders (no lighting, positioned by uniform light)
-lightVertexShader : WebGL.Shader Vertex Uniforms { vcolor : Vec3 }
-lightVertexShader =
-  [glsl|
-    attribute vec3 position;
-    attribute vec3 color;
-
-    uniform mat4 perspective;
-    uniform mat4 camera;
-    uniform vec3 light;
-
-    varying vec3 vcolor;
-
-    void main () {
-        vec4 worldPos = vec4(light + position, 1.0);
-        gl_Position = perspective * camera * worldPos;
-        vcolor = color;
-    }
-  |]
-
-lightFragmentShader : WebGL.Shader {} Uniforms { vcolor : Vec3 }
-lightFragmentShader =
-  [glsl|
-    precision mediump float;
-    varying vec3 vcolor;
-    void main () {
-        gl_FragColor = vec4(vcolor, 1.0);
     }
   |]
