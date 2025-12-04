@@ -1,4 +1,4 @@
-module Main exposing (main)
+port module Main exposing (main)
 
 import Browser
 import Browser.Events as E
@@ -14,6 +14,9 @@ import Array
 import World exposing (Block)
 import Render exposing (uniforms, vertexShader, fragmentShader, meshFromChunk)
 import Json.Decode as Decode
+import Render exposing (raycastVoxel)
+
+port requestPointerLock : () -> Cmd msg
 
 -- MAIN -----------------------------------------------------------------------
 
@@ -39,10 +42,10 @@ init : () -> ( Model, Cmd Msg )
 init () =
     ( { chunk = fullChunk
       , dir = vec2 0 0
-      , pos = vec3 10 0 0
+      , pos = vec3 0 0 0
       , keys = []
       }
-    , Cmd.none
+    , requestPointerLock ()
     )
 
 -- MESSAGES -------------------------------------------------------------------
@@ -77,17 +80,23 @@ keyDecoder wrap =
     Decode.field "key" Decode.string |> Decode.map wrap
 
 -- CAMERA MATH ----------------------------------------------------------------
-
 forwardVector : Vec2 -> Vec3
 forwardVector dir =
     let
         yaw = Math.Vector2.getX dir
         pitch = Math.Vector2.getY dir
+        cp = cos pitch
     in
-    vec3
-        (cos pitch * cos yaw)
-        (sin pitch)
-        (cos pitch * sin yaw)
+    vec3 (cp * cos yaw) (sin pitch) (cp * sin yaw)
+
+forwardVectorFlattened : Vec2 -> Vec3
+forwardVectorFlattened dir =
+    let
+        yaw = Math.Vector2.getX dir
+        pitch = Math.Vector2.getY dir
+    in
+    vec3 (cos yaw) 0 (sin yaw)
+
 
 
 rightVector : Vec2 -> Vec3
@@ -130,11 +139,9 @@ update msg model =
             let
                 sens = 0.002
                 newYaw = Math.Vector2.getX model.dir + dx * sens
-                newPitch =
-                    clamp (-1.2) 1.2 (Math.Vector2.getY model.dir + dy * sens)
+                newPitch = clamp (-1.2) 1.2 (Math.Vector2.getY model.dir - dy * sens)
             in
             ( { model | dir = vec2 newYaw newPitch }, Cmd.none )
-
 
         KeyDown key ->
             if List.member key model.keys then
@@ -150,14 +157,40 @@ update msg model =
         TimeDelta dt ->
             let
                 speed =
-                    if List.member "Shift" model.keys then
-                        10
+                    if List.member "Control" model.keys then
+                        0.01
                     else
-                        5
+                        0.005
 
-                f = scale3 (speed * dt) (forwardVector model.dir)
+                f = scale3 (speed * dt) (forwardVectorFlattened model.dir)
                 r = scale3 (speed * dt) (rightVector model.dir)
                 up = scale3 (speed * dt) (vec3 0 1 0)
+
+                withBrokenBlock = 
+                    let
+                        _ = Debug.log "Removing block"
+                        reach = 6
+                        looking = forwardVector model.dir
+                        isSolid = \coords ->
+                            case Grid.getElement coords (Just model.chunk) of
+                                Just block ->
+                                    block.id /= 0
+
+                                Nothing ->
+                                    False
+                    in
+                    case raycastVoxel model.pos looking reach isSolid of
+                        Just ( coords, face ) ->
+                            let
+                                air = { id = 0 }
+                            in
+                            case Grid.setElement coords air (Just model.chunk) of
+                                Just updatedChunk ->
+                                    { model | chunk = updatedChunk }
+                                Nothing ->
+                                    model
+                        Nothing ->
+                            model
 
                 pos1 =
                     if List.member "w" model.keys then
@@ -190,12 +223,18 @@ update msg model =
                         pos4
 
                 posFinal =
-                    if List.member "Control" model.keys then
+                    if List.member "Shift" model.keys then
                         sub3 pos5 up
                     else
                         pos5
+                modelTranslated = 
+                    if List.member "r" model.keys then
+                        {withBrokenBlock | pos = posFinal }
+                    else
+                        {model | pos = posFinal }
+                
             in
-            ( { model | pos = posFinal }, Cmd.none )
+            ( modelTranslated, Cmd.none )
 
 
 -- WORLD ----------------------------------------------------------------------
@@ -207,7 +246,7 @@ fullBlock =
 
 fullChunk : Grid Block
 fullChunk =
-    { elements = Array.repeat 2000 fullBlock
+    { elements = Array.repeat (16 * 16 * 16) fullBlock
     , shape = [ 16, 16, 16 ]
     }
 
@@ -217,12 +256,11 @@ fullChunk =
 view : Model -> Html Msg
 view model =
     let
-        _ = Debug.log "Model" model
         uniforms_ =
             uniforms model.dir model.pos
     in
     WebGL.toHtml
-        [ width 1400
+        [ width 700
         , height 700
         , style "display" "block"
         ]

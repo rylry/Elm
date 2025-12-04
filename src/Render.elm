@@ -19,17 +19,40 @@ type alias Uniforms =
   , light : Vec3
   }
 
+-- Converts yaw/pitch to a forward vector
+forwardVector : Vec2 -> Vec3
+forwardVector dir =
+    let
+        yaw = getX dir
+        pitch = getY dir
+    in
+    vec3
+        (cos pitch * cos yaw)   -- X
+        (sin pitch)             -- Y
+        (cos pitch * sin yaw)   -- Z
+
+-- Builds a look-at camera matrix from position + view direction
+cameraMatrix : Vec2 -> Vec3 -> Mat4.Mat4
+cameraMatrix dir pos =
+    let
+        fwd = forwardVector dir
+        target = Vec3.add pos fwd
+        up = vec3 0 1 0
+    in
+    Mat4.makeLookAt pos target up
+
 uniforms : Vec2 -> Vec3 -> Uniforms
 uniforms viewAngle pos = 
     let
-        angle = getX viewAngle
+        yaw = getX viewAngle
+        pitch = getY viewAngle
+        fwd = vec3 (cos pitch * cos yaw) (sin pitch) (cos pitch * sin yaw)
+        
     in
     { 
-      rotation = Mat4.mul 
-        (Mat4.makeRotate (3 * angle) (vec3 0 1 0)) 
-        (Mat4.makeRotate (2 * angle) (vec3 1 0 0)), 
+      rotation = Mat4.identity,
       perspective = Mat4.makePerspective 50 1 0.01 100 , 
-      camera = Mat4.makeLookAt (vec3 7 7 20) (vec3 0 0 0) (vec3 0 1 0) , 
+      camera = cameraMatrix viewAngle pos, 
       light = vec3 0 2 2 
     }
 
@@ -154,32 +177,126 @@ randomChunkGenerator =
     list (16*16*16) randomBlock
         |> map (\lst -> { elements = Array.fromList lst, shape = [16,16,16] })
 
+-- Returns (targetVoxel, previousVoxel) or Nothing if no hit
+raycastVoxel : Vec3 -> Vec3 -> Float -> (List Int -> Bool)
+    -> Maybe ( List Int, List Int )
+raycastVoxel origin direction reach isSolid  =
+    let
+        -- Extract floats
+        ox = Vec3.getX origin
+        oy = Vec3.getY origin
+        oz = Vec3.getZ origin
 
--- FACE: compute normal, force outward relative to cube center
-face : Vec3 -> Vec3 -> Vec3 -> Vec3 -> Vec3 -> List ( Vertex, Vertex, Vertex )
-face color a b c d =
-  let
-    -- raw normal from triangle winding
-    raw =
-      Vec3.normalize (Vec3.cross (Vec3.sub b a) (Vec3.sub c a))
+        dirRawX = Vec3.getX direction
+        dirRawY = Vec3.getY direction
+        dirRawZ = Vec3.getZ direction
 
-    -- centroid of the quad (approx center of this face)
-    centroid =
-      Vec3.scale (1 / 4) (Vec3.add a (Vec3.add b (Vec3.add c d)))
+        -- Normalize direction
+        mag =
+            sqrt (dirRawX ^ 2 + dirRawY ^ 2 + dirRawZ ^ 2)
 
-    -- ensure normal points outward (away from cube center at origin)
-    n =
-      if Vec3.dot raw centroid < 0 then
-        Vec3.scale -1 raw
-      else
-        raw
+        dirX = dirRawX / mag
+        dirY = dirRawY / mag
+        dirZ = dirRawZ / mag
 
-    vertex position =
-      Vertex (Vec3.scale (1 / 255) color) position n
-  in
-  [ ( vertex a, vertex b, vertex c )
-  , ( vertex c, vertex d, vertex a )
-  ]
+        -- Convert float → voxel index list
+        voxelFrom x y z =
+            [ floor x, floor y, floor z ]
+
+        -- Update a 3-vector (List Int)
+        setX dx voxel =
+          case voxel of
+              [ x, y, z ] ->
+                  [ x + dx, y, z ]
+
+              _ ->
+                  voxel -- invalid list, do nothing
+
+        setY dy voxel =
+          case voxel of
+              [ x, y, z ] ->
+                  [ x, y + dy, z ]
+
+              _ ->
+                  voxel
+
+        setZ dz voxel =
+          case voxel of
+              [ x, y, z ] ->
+                  [ x, y, z + dz ]
+
+              _ ->
+                  voxel
+
+
+        -- Distance to next voxel boundary
+        boundaryDistance originCoord dirComp step =
+            if dirComp == 0 then
+                1/0
+            else
+                let
+                    nextBoundary =
+                        if step > 0 then
+                            toFloat (floor originCoord + 1)
+                        else
+                            toFloat (ceiling originCoord - 1)
+                in
+                (nextBoundary - originCoord) / dirComp
+
+        -- Starting voxel
+        startVoxel =
+            voxelFrom ox oy oz
+
+        -- DDA step direction
+        stepX = if dirX >= 0 then 1 else -1
+        stepY = if dirY >= 0 then 1 else -1
+        stepZ = if dirZ >= 0 then 1 else -1
+
+        -- Initial distance to first boundary
+        tMax0X = boundaryDistance ox dirX stepX
+        tMax0Y = boundaryDistance oy dirY stepY
+        tMax0Z = boundaryDistance oz dirZ stepZ
+
+        -- Distance between crossings
+        tDeltaX = if dirX == 0 then 1/0 else abs (1 / dirX)
+        tDeltaY = if dirY == 0 then 1/0 else abs (1 / dirY)
+        tDeltaZ = if dirZ == 0 then 1/0 else abs (1 / dirZ)
+
+        -- Recursive march function
+        march pos prev tx ty tz =
+            if isSolid pos then
+                Just ( pos, prev )
+
+            else
+                let
+                    nextT = min tx (min ty tz)
+                in
+                if nextT > reach then
+                    Nothing
+
+                else if tx < ty && tx < tz then
+                    -- Step X
+                    let
+                        newPos = setX stepX pos
+                    in
+                    march newPos pos (tx + tDeltaX) ty tz
+
+                else if ty < tz then
+                    -- Step Y
+                    let
+                        newPos = setY stepY pos
+                    in
+                    march newPos pos tx (ty + tDeltaY) tz
+
+                else
+                    -- Step Z
+                    let
+                        newPos = setZ stepZ pos
+                    in
+                    march newPos pos tx ty (tz + tDeltaZ)
+    in
+    march startVoxel startVoxel tMax0X tMax0Y tMax0Z
+
 
 -- LIGHT CUBE (SMALL MARKER)
 
