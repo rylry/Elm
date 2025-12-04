@@ -53,7 +53,7 @@ uniforms viewAngle pos =
       rotation = Mat4.identity,
       perspective = Mat4.makePerspective 50 1 0.01 100 , 
       camera = cameraMatrix viewAngle pos, 
-      light = vec3 0 2 2 
+      light = pos
     }
 
 
@@ -86,11 +86,11 @@ setOrDeleteFace index value buffer =
 
 setFacesFromCube : (Int, Int, Int) -> Maybe (Grid Int) -> Maybe (Grid Int)
 setFacesFromCube (x, y, z) buffer =
-           setOrDeleteFace [x    , y, z, 0] 1
+           setOrDeleteFace [x    , y, z, 0] -1
         <| setOrDeleteFace [x + 1, y, z, 0] 1
-        <| setOrDeleteFace [x, y    , z, 1] 1
+        <| setOrDeleteFace [x, y    , z, 1] -1
         <| setOrDeleteFace [x, y + 1, z, 1] 1
-        <| setOrDeleteFace [x, y, z    , 2] 1
+        <| setOrDeleteFace [x, y, z    , 2] -1
         <| setOrDeleteFace [x, y, z + 1, 2] 1
         <| buffer
 
@@ -117,8 +117,8 @@ setFacesFromChunk chunk =
     Array.foldl folder (Just emptyFaceBuffer) allIndexedBlocks -- Return faces buffer
 
 -- MESH FROM FACES
-trianglesFromFace : (Int, Int, Int) -> Int -> List (Vertex, Vertex, Vertex)
-trianglesFromFace (x, y, z) dir =
+trianglesFromFace : (Int, Int, Int) -> Int -> Int -> List (Vertex, Vertex, Vertex)
+trianglesFromFace (x, y, z) dir value =
     let
       p000 = vec3 (toFloat x)     (toFloat y)     (toFloat z)
       p100 = vec3 (toFloat (x+1)) (toFloat y)     (toFloat z)
@@ -127,12 +127,17 @@ trianglesFromFace (x, y, z) dir =
       p001 = vec3 (toFloat x)     (toFloat y)     (toFloat (z+1))
       p101 = vec3 (toFloat (x+1)) (toFloat y)     (toFloat (z+1))
       p011 = vec3 (toFloat x)     (toFloat (y+1)) (toFloat (z+1))
-      normal =
+      preNormal =
         case dir of
             0 -> vec3 1 0 0
             1 -> vec3 0 1 0
             2 -> vec3 0 0 1
             _ -> vec3 0 0 0
+      normal =
+        if value < 0 then
+          Vec3.negate preNormal
+        else
+          preNormal
       vertex pos =
         Vertex (vec3 0.5 0.5 0.5) pos normal
    in
@@ -154,7 +159,7 @@ listFromChunk chunk =
                     tris =
                       case coords of
                         [ x, y, z, dir ] ->
-                          trianglesFromFace (x, y, z) dir
+                          trianglesFromFace (x, y, z) dir value
                         _ ->
                           []
                 in
