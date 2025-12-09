@@ -11,10 +11,13 @@ import WebGL
 
 import Grid exposing (Grid)
 import Array
-import World exposing (Block)
-import Render exposing (uniforms, vertexShader, fragmentShader, meshFromChunk)
+import World exposing (Block, World)
+import Render exposing (uniforms, vertexShader, fragmentShader, meshFromWorld)
 import Json.Decode as Decode
 import Render exposing (raycastVoxel)
+import World exposing (worldFromHeightMap)
+import Render exposing (meshFromChunk)
+import Random
 
 port requestPointerLock : () -> Cmd msg
 
@@ -32,20 +35,21 @@ main =
 -- MODEL ----------------------------------------------------------------------
 
 type alias Model =
-    { chunk : Grid Block
+    { world : World
     , dir : Vec2      -- (yaw, pitch)
     , pos : Vec3      -- camera position
     , keys : List String
     }
 
+
 init : () -> ( Model, Cmd Msg )
 init () =
-    ( { chunk = fullChunk
+    ( { world = worldFromHeightMap {elements = Array.repeat (100 * 5) 2, shape = [100, 5] }
       , dir = vec2 0 0
       , pos = vec3 0 0 0
       , keys = []
       }
-    , requestPointerLock ()
+    , Random.generate GotHeightMap (Random.list (mapSize) (Random.int 1 4))
     )
 
 -- MESSAGES -------------------------------------------------------------------
@@ -55,6 +59,7 @@ type Msg
     | MouseMove (Float, Float)
     | KeyDown String
     | KeyUp String
+    | GotHeightMap (List Int)
 
 -- SUBSCRIPTIONS --------------------------------------------------------------
 
@@ -135,6 +140,16 @@ sub3 a b =
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
+        GotHeightMap heightList ->
+            let
+
+                heightMap =
+                    { elements = Array.fromList heightList
+                    , shape = mapShape
+                    }
+                newWorld = worldFromHeightMap heightMap
+            in
+            ( { model | world = newWorld }, Cmd.none )
         MouseMove ( dx, dy ) ->
             let
                 sens = 0.002
@@ -169,27 +184,26 @@ update msg model =
                 withBrokenBlock = 
                     let
                         _ = Debug.log "Removing block"
-                        reach = 6
+                        reach = 60
                         looking = forwardVector model.dir
                         isSolid = \coords ->
-                            case Grid.getElement coords (Just model.chunk) of
-                                Just block ->
-                                    block.id /= 0
-
-                                Nothing ->
-                                    False
+                            case coords of 
+                              [x, y, z] ->
+                                 let
+                                     block = World.getBlock (x, y, z) model.world
+                                 in
+                                 block.id /= 0
+                              _ ->
+                                False
                     in
                     case raycastVoxel model.pos looking reach isSolid of
-                        Just ( coords, face ) ->
+                        Just ( [x, y, z], face ) ->
                             let
+                                coords = [x, y, z]
                                 air = { id = 0 }
                             in
-                            case Grid.setElement coords air (Just model.chunk) of
-                                Just updatedChunk ->
-                                    { model | chunk = updatedChunk }
-                                Nothing ->
-                                    model
-                        Nothing ->
+                            { model | world = (World.setBlock (x, y, z) air model.world) }
+                        _ ->
                             model
 
                 pos1 =
@@ -238,6 +252,17 @@ update msg model =
 
 
 -- WORLD ----------------------------------------------------------------------
+sizeX : Int
+sizeX = 35
+
+sizeZ : Int
+sizeZ = 35
+
+mapShape : List Int
+mapShape = [ sizeX, sizeZ ]
+
+mapSize : Int
+mapSize = sizeX * sizeZ
 
 fullBlock : Block
 fullBlock =
@@ -267,6 +292,6 @@ view model =
         [ WebGL.entity
             vertexShader
             fragmentShader
-            (meshFromChunk model.chunk)
+            (meshFromWorld model.world)
             uniforms_
         ]

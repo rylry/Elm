@@ -8,7 +8,7 @@ import WebGL
 import Random exposing (Generator, list, map)
 import Array
 import Grid
-import World exposing (Block)
+import World exposing (Block, emptyChunk)
 import Math.Vector2 exposing (getX)
 import Math.Vector2 exposing (getY)
 
@@ -147,8 +147,8 @@ trianglesFromFace (x, y, z) dir value =
         2 -> [ ( vertex p000, vertex p010, vertex p100 ), ( vertex p010, vertex p100, vertex p110 ) ] -- Z normal
         _ -> []
 -- mesh generator
-listFromChunk : Grid Block -> List (Vertex, Vertex, Vertex)
-listFromChunk chunk =
+listFromChunk : Grid Block -> (Int, Int, Int) -> List (Vertex, Vertex, Vertex)
+listFromChunk chunk (dx, dy, dz) =
     let
         buffer = Maybe.withDefault emptyFaceBuffer (setFacesFromChunk chunk)
 
@@ -159,7 +159,7 @@ listFromChunk chunk =
                     tris =
                       case coords of
                         [ x, y, z, dir ] ->
-                          trianglesFromFace (x, y, z) dir value
+                          trianglesFromFace (x + dx, y + dy, z + dz) dir value
                         _ ->
                           []
                 in
@@ -168,9 +168,32 @@ listFromChunk chunk =
                 acc
     in
     Grid.fold folder [] buffer
+listFromWorld : Grid (Grid Block) -> List (Vertex, Vertex, Vertex)
+listFromWorld world =
+     let
+        folder : List Int -> Grid Block -> List (Vertex, Vertex, Vertex) -> List (Vertex, Vertex, Vertex)
+        folder coords value acc =
+                let
+                    tris =
+                      case coords of
+                        [ x, y, z ] ->
+                          let chunk = Maybe.withDefault emptyChunk (Grid.getElement [x, y, z] (Just world))
+                          in
+                          listFromChunk chunk (x * 16, y * 16, z * 16)
+                        _ ->
+                          []
+                in
+                List.append tris acc
+    in
+    Grid.fold folder [] world
+
 meshFromChunk : Grid Block -> WebGL.Mesh Vertex
 meshFromChunk chunk =
-    WebGL.triangles (listFromChunk chunk)
+    WebGL.triangles (listFromChunk chunk (0, 0, 0))
+
+meshFromWorld : Grid (Grid Block) -> WebGL.Mesh Vertex
+meshFromWorld world =
+    WebGL.triangles (listFromWorld world)
 
 randomBlock : Generator Block
 randomBlock =

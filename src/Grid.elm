@@ -64,18 +64,20 @@ getElement indices grid =
 
 setElement : List Int -> a -> Maybe (Grid a) -> Maybe (Grid a)
 setElement indices newElement grid = 
-    Maybe.andThen
-        (\gridd ->
-            let
-                index = getReference gridd indices
-            in
-            Maybe.map 
-                (\i -> 
-                    { gridd | elements = Array.set i newElement gridd.elements }
+    let
+        index = getReference (Maybe.withDefault {elements = Array.empty, shape = []} (grid)) indices
+    in
+        Maybe.withDefault grid (
+            Maybe.map
+                (\i ->
+                    Maybe.map
+                        (\gridd ->
+                            { gridd | elements = Array.set i newElement gridd.elements }
+                        )
+                        grid
                 )
                 index
         )
-        grid
 
 
 
