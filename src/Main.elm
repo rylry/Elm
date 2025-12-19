@@ -206,6 +206,31 @@ update msg model =
                         _ ->
                             model
 
+                withPlacedBlock = 
+                    let
+                        _ = Debug.log "Placing block"
+                        reach = 60
+                        looking = forwardVector model.dir
+                        isSolid = \coords ->
+                            case coords of 
+                              [x, y, z] ->
+                                 let
+                                     block = World.getBlock (x, y, z) model.world
+                                 in
+                                 block.id /= 0
+                              _ ->
+                                False
+                    in
+                    case raycastVoxel model.pos looking reach isSolid of
+                        Just ( target, [x, y, z] ) ->
+                            let
+                                coords = [x, y, z]
+                                full = { id = 1 }
+                            in
+                            { model | world = (World.setBlock (x, y, z) full model.world) }
+                        _ ->
+                            model
+
                 pos1 =
                     if List.member "w" model.keys then
                         add3 model.pos f
@@ -244,6 +269,8 @@ update msg model =
                 modelTranslated = 
                     if List.member "r" model.keys then
                         {withBrokenBlock | pos = posFinal }
+                    else if List.member "e" model.keys then
+                        {withPlacedBlock | pos = posFinal }
                     else
                         {model | pos = posFinal }
                 
